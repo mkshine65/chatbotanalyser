@@ -1,3 +1,4 @@
+import "https://deno.land/x/xhr@0.1.0/mod.ts";
 import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 
@@ -18,107 +19,39 @@ function sanitizeText(text: string): string {
     .trim();
 }
 
-// Extract text from PDF - simple approach for Deno
-function extractPdfText(arrayBuffer: ArrayBuffer): string {
-  const bytes = new Uint8Array(arrayBuffer);
-  const textParts: string[] = [];
-  
-  // Method 1: Extract text between parentheses (PDF text objects)
-  // PDF stores text in format: (text content) Tj
-  let inParens = false;
-  let currentText = "";
-  let escapeNext = false;
-  
-  for (let i = 0; i < bytes.length; i++) {
-    const byte = bytes[i];
-    const char = String.fromCharCode(byte);
-    
-    if (escapeNext) {
-      if (char === 'n') currentText += '\n';
-      else if (char === 'r') currentText += '';
-      else if (char === 't') currentText += '\t';
-      else if (char === '(' || char === ')' || char === '\\') currentText += char;
-      else currentText += char;
-      escapeNext = false;
-      continue;
-    }
-    
-    if (char === '\\' && inParens) {
-      escapeNext = true;
-      continue;
-    }
-    
-    if (char === '(' && !inParens) {
-      inParens = true;
-      currentText = "";
-      continue;
-    }
-    
-    if (char === ')' && inParens) {
-      inParens = false;
-      // Only keep text with actual readable content
-      if (currentText.length > 0 && /[a-zA-Z0-9]/.test(currentText)) {
-        textParts.push(currentText);
-      }
-      continue;
-    }
-    
-    if (inParens && byte >= 32 && byte < 127) {
-      currentText += char;
-    } else if (inParens && byte >= 128) {
-      // Try to handle extended ASCII
-      currentText += char;
-    }
+// Extract text from PDF (works in edge/Deno).
+async function extractPdfText(arrayBuffer: ArrayBuffer): Promise<string> {
+  const { getDocumentProxy, extractText } = await import(
+    "https://esm.sh/unpdf@0.7.1"
+  );
+
+  const pdf = await getDocumentProxy(new Uint8Array(arrayBuffer));
+  const { text } = await extractText(pdf, { mergePages: true });
+
+  try {
+    // Some implementations expose destroy/cleanup
+    (pdf as any)?.destroy?.();
+  } catch {
+    // ignore
   }
-  
-  // Method 2: Also look for BT...ET text blocks with Tj/TJ operators
-  const textDecoder = new TextDecoder("utf-8", { fatal: false });
-  const rawText = textDecoder.decode(bytes);
-  
-  // Look for streams that might contain readable text
-  const streamRegex = /stream\s*([\s\S]*?)\s*endstream/g;
-  let match;
-  while ((match = streamRegex.exec(rawText)) !== null) {
-    const streamContent = match[1];
-    // Look for text objects in stream
-    const textObjRegex = /\(([^)]{2,})\)/g;
-    let textMatch;
-    while ((textMatch = textObjRegex.exec(streamContent)) !== null) {
-      const extractedText = textMatch[1];
-      if (/[a-zA-Z0-9]/.test(extractedText) && extractedText.length > 1) {
-        textParts.push(extractedText);
-      }
-    }
-  }
-  
-  // Combine and clean up
-  let combinedText = textParts.join(" ");
-  
-  // If we got very little text, try a more aggressive approach
-  if (combinedText.length < 100) {
-    console.log("Fallback: extracting all printable characters");
-    // Extract any printable ASCII sequences
-    const printableRegex = /[\x20-\x7E]{4,}/g;
-    const printableMatches = rawText.match(printableRegex) || [];
-    combinedText = printableMatches
-      .filter(s => /[a-zA-Z]/.test(s)) // Must contain letters
-      .join(" ");
-  }
-  
-  return sanitizeText(combinedText);
+
+  const joinedText = Array.isArray(text) ? text.join("\n\n") : text;
+  const cleaned = sanitizeText(joinedText || "");
+  const alphaCount = (cleaned.match(/[A-Za-z]/g) || []).length;
+  return alphaCount >= 50 ? cleaned : "";
 }
 
 // Extract text from DOCX
 function extractDocxText(arrayBuffer: ArrayBuffer): string {
   const textDecoder = new TextDecoder("utf-8", { fatal: false });
   const rawContent = textDecoder.decode(new Uint8Array(arrayBuffer));
-  
+
   // Extract text from XML tags
   const textMatches = rawContent.match(/<w:t[^>]*>([^<]*)<\/w:t>/g) || [];
   const text = textMatches
     .map((m) => m.replace(/<[^>]+>/g, ""))
     .join(" ");
-    
+
   return sanitizeText(text);
 }
 
@@ -171,10 +104,10 @@ serve(async (req) => {
     // Extract text based on file type
     let text = "";
     const arrayBuffer = await fileData.arrayBuffer();
-    
+
     if (doc.file_type === "pdf") {
       console.log("Extracting PDF text...");
-      text = extractPdfText(arrayBuffer);
+      text = await extractPdfText(arrayBuffer);
     } else if (doc.file_type === "docx") {
       console.log("Extracting DOCX text...");
       text = extractDocxText(arrayBuffer);
