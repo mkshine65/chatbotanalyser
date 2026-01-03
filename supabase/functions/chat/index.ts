@@ -24,49 +24,66 @@ serve(async (req) => {
       Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!
     );
 
-    // Get relevant chunks from selected documents
+    // Detect if this is a summary/overview request
+    const lowerMessage = message.toLowerCase();
+    const isSummaryRequest = lowerMessage.includes("summar") || 
+                              lowerMessage.includes("overview") || 
+                              lowerMessage.includes("what is this") ||
+                              lowerMessage.includes("tell me about");
+
+    // Get chunks from selected documents
     const { data: chunks, error: chunksError } = await supabase
       .from("document_chunks")
       .select("content, chunk_index, document_id, documents(name)")
       .in("document_id", documentIds)
-      .limit(20);
+      .order("chunk_index", { ascending: true })
+      .limit(isSummaryRequest ? 50 : 100); // More chunks for better context
 
     if (chunksError) {
       console.error("Error fetching chunks:", chunksError);
       throw chunksError;
     }
 
-    // Simple keyword-based relevance scoring
-    const keywords = message.toLowerCase().split(/\s+/).filter((w: string) => w.length > 3);
-    
-    const scoredChunks = (chunks || []).map((chunk: any) => {
-      const content = chunk.content.toLowerCase();
-      let score = 0;
-      for (const keyword of keywords) {
-        if (content.includes(keyword)) {
-          score += content.split(keyword).length - 1;
-        }
-      }
-      return { ...chunk, score };
-    });
+    console.log("Fetched chunks:", chunks?.length || 0);
 
-    // Sort by relevance and take top chunks
-    scoredChunks.sort((a: any, b: any) => b.score - a.score);
-    const relevantChunks = scoredChunks.slice(0, 5);
+    let relevantChunks: any[];
+
+    if (isSummaryRequest) {
+      // For summary requests, take first chunks from each document (they usually contain key info)
+      relevantChunks = (chunks || []).slice(0, 15);
+    } else {
+      // Simple keyword-based relevance scoring for specific questions
+      const keywords = lowerMessage.split(/\s+/).filter((w: string) => w.length > 3);
+      
+      const scoredChunks = (chunks || []).map((chunk: any) => {
+        const content = chunk.content.toLowerCase();
+        let score = 0;
+        for (const keyword of keywords) {
+          if (content.includes(keyword)) {
+            score += content.split(keyword).length - 1;
+          }
+        }
+        return { ...chunk, score };
+      });
+
+      // Sort by relevance and take top chunks
+      scoredChunks.sort((a: any, b: any) => b.score - a.score);
+      relevantChunks = scoredChunks.slice(0, 10);
+    }
 
     // Build context from chunks
     const context = relevantChunks
       .map((c: any) => `[From: ${c.documents?.name}]\n${c.content}`)
       .join("\n\n---\n\n");
 
+    console.log("Context length:", context.length);
+
     // Build sources for response
-    const sources = relevantChunks
-      .filter((c: any) => c.score > 0)
-      .map((c: any) => ({
-        documentName: c.documents?.name || "Unknown",
-        chunkIndex: c.chunk_index,
-        content: c.content.slice(0, 200),
-      }));
+    const sources = relevantChunks.slice(0, 5).map((c: any) => ({
+      documentName: c.documents?.name || "Unknown",
+      chunkIndex: c.chunk_index,
+      content: c.content.slice(0, 200),
+    }));
 
     // Prepare messages for LLM
     const systemPrompt = `You are a helpful AI assistant that answers questions based ONLY on the provided document context. 
