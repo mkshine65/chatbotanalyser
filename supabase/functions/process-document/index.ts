@@ -6,6 +6,74 @@ const corsHeaders = {
   "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type",
 };
 
+// Extract text from PDF using pdf.js-extract
+async function extractPdfText(arrayBuffer: ArrayBuffer): Promise<string> {
+  try {
+    // Use pdf.js for proper PDF text extraction
+    const pdfjs = await import("https://esm.sh/pdfjs-dist@4.0.379/build/pdf.mjs");
+    
+    const loadingTask = pdfjs.getDocument({ data: new Uint8Array(arrayBuffer) });
+    const pdf = await loadingTask.promise;
+    
+    let fullText = "";
+    
+    for (let i = 1; i <= pdf.numPages; i++) {
+      const page = await pdf.getPage(i);
+      const textContent = await page.getTextContent();
+      const pageText = textContent.items
+        .map((item: any) => item.str)
+        .join(" ");
+      fullText += pageText + "\n\n";
+    }
+    
+    return fullText;
+  } catch (error) {
+    console.error("PDF.js extraction failed:", error);
+    
+    // Fallback: try basic text extraction
+    const textDecoder = new TextDecoder("utf-8", { fatal: false });
+    const rawText = textDecoder.decode(new Uint8Array(arrayBuffer));
+    
+    // Extract readable text between parentheses (PDF text objects)
+    const textMatches: string[] = [];
+    const regex = /\(([^)]+)\)/g;
+    let match;
+    while ((match = regex.exec(rawText)) !== null) {
+      const text = match[1]
+        .replace(/\\n/g, "\n")
+        .replace(/\\r/g, "")
+        .replace(/\\\(/g, "(")
+        .replace(/\\\)/g, ")")
+        .replace(/\\\\/g, "\\");
+      if (text.length > 1 && /[a-zA-Z0-9]/.test(text)) {
+        textMatches.push(text);
+      }
+    }
+    
+    if (textMatches.length > 0) {
+      return textMatches.join(" ");
+    }
+    
+    // Last resort: filter for printable text
+    return rawText
+      .replace(/[^\x20-\x7E\n\r\t]/g, " ")
+      .replace(/\s+/g, " ")
+      .trim();
+  }
+}
+
+// Extract text from DOCX
+function extractDocxText(arrayBuffer: ArrayBuffer): string {
+  const textDecoder = new TextDecoder("utf-8", { fatal: false });
+  const rawContent = textDecoder.decode(new Uint8Array(arrayBuffer));
+  
+  // Extract text from XML tags
+  const textMatches = rawContent.match(/<w:t[^>]*>([^<]*)<\/w:t>/g) || [];
+  return textMatches
+    .map((m) => m.replace(/<[^>]+>/g, ""))
+    .join(" ");
+}
+
 serve(async (req) => {
   if (req.method === "OPTIONS") {
     return new Response(null, { headers: corsHeaders });
@@ -31,70 +99,76 @@ serve(async (req) => {
       throw new Error("Document not found");
     }
 
+    console.log("Document found:", doc.name, "Type:", doc.file_type);
+
     // Download file from storage
     const { data: fileData, error: downloadError } = await supabase.storage
       .from("documents")
       .download(doc.storage_path);
 
     if (downloadError || !fileData) {
+      console.error("Download error:", downloadError);
       throw new Error("Failed to download file");
     }
 
+    console.log("File downloaded, size:", fileData.size);
+
     // Extract text based on file type
     let text = "";
+    const arrayBuffer = await fileData.arrayBuffer();
     
     if (doc.file_type === "pdf") {
-      // For PDF, we'll use a simple text extraction approach
-      const arrayBuffer = await fileData.arrayBuffer();
-      const uint8Array = new Uint8Array(arrayBuffer);
-      
-      // Simple PDF text extraction (basic approach)
-      const textDecoder = new TextDecoder("utf-8", { fatal: false });
-      const rawText = textDecoder.decode(uint8Array);
-      
-      // Extract text between stream markers (simplified)
-      const streamMatches = rawText.match(/stream[\r\n]+([\s\S]*?)[\r\n]+endstream/g) || [];
-      for (const match of streamMatches) {
-        const content = match.replace(/stream[\r\n]+/, "").replace(/[\r\n]+endstream/, "");
-        // Filter printable ASCII
-        const filtered = content.replace(/[^\x20-\x7E\n\r\t]/g, " ");
-        if (filtered.trim().length > 20) {
-          text += filtered + "\n";
-        }
-      }
-      
-      // Fallback: extract any readable text
-      if (text.length < 100) {
-        text = rawText.replace(/[^\x20-\x7E\n\r\t]/g, " ").replace(/\s+/g, " ");
-      }
+      console.log("Extracting PDF text...");
+      text = await extractPdfText(arrayBuffer);
     } else if (doc.file_type === "docx") {
-      // DOCX is a ZIP with XML content
-      const arrayBuffer = await fileData.arrayBuffer();
-      const textDecoder = new TextDecoder("utf-8", { fatal: false });
-      const rawContent = textDecoder.decode(new Uint8Array(arrayBuffer));
-      
-      // Extract text from XML tags
-      const textMatches = rawContent.match(/<w:t[^>]*>([^<]*)<\/w:t>/g) || [];
-      text = textMatches
-        .map((m) => m.replace(/<[^>]+>/g, ""))
-        .join(" ");
+      console.log("Extracting DOCX text...");
+      text = extractDocxText(arrayBuffer);
+    } else if (doc.file_type === "txt" || doc.file_type === "csv") {
+      const textDecoder = new TextDecoder("utf-8");
+      text = textDecoder.decode(new Uint8Array(arrayBuffer));
     }
 
     console.log("Extracted text length:", text.length);
+    console.log("Text preview:", text.substring(0, 500));
 
-    // Chunk the text
+    if (text.length < 50) {
+      console.error("Insufficient text extracted");
+      throw new Error("Could not extract sufficient text from document");
+    }
+
+    // Chunk the text with better sentence awareness
     const chunkSize = 1000;
     const overlap = 200;
     const chunks: string[] = [];
     
+    // Clean up the text
+    text = text.replace(/\s+/g, " ").trim();
+    
     for (let i = 0; i < text.length; i += chunkSize - overlap) {
-      const chunk = text.slice(i, i + chunkSize).trim();
+      let chunk = text.slice(i, i + chunkSize).trim();
+      
+      // Try to end at sentence boundary
+      if (i + chunkSize < text.length) {
+        const lastPeriod = chunk.lastIndexOf(".");
+        const lastNewline = chunk.lastIndexOf("\n");
+        const boundary = Math.max(lastPeriod, lastNewline);
+        if (boundary > chunkSize / 2) {
+          chunk = chunk.slice(0, boundary + 1).trim();
+        }
+      }
+      
       if (chunk.length > 50) {
         chunks.push(chunk);
       }
     }
 
     console.log("Created chunks:", chunks.length);
+
+    // Delete existing chunks for this document
+    await supabase
+      .from("document_chunks")
+      .delete()
+      .eq("document_id", documentId);
 
     // Store chunks in database
     if (chunks.length > 0) {
@@ -105,13 +179,17 @@ serve(async (req) => {
         metadata: { source: doc.name },
       }));
 
-      const { error: insertError } = await supabase
-        .from("document_chunks")
-        .insert(chunkRecords);
+      // Insert in batches of 100
+      for (let i = 0; i < chunkRecords.length; i += 100) {
+        const batch = chunkRecords.slice(i, i + 100);
+        const { error: insertError } = await supabase
+          .from("document_chunks")
+          .insert(batch);
 
-      if (insertError) {
-        console.error("Error inserting chunks:", insertError);
-        throw insertError;
+        if (insertError) {
+          console.error("Error inserting chunks batch:", insertError);
+          throw insertError;
+        }
       }
     }
 
