@@ -156,7 +156,35 @@ export function DocumentUpload({ onUploadComplete }: DocumentUploadProps) {
         return;
       }
 
-      const validFiles = acceptedFiles.filter((file) => {
+      // Check document limit (max 10)
+      const { count, error: countError } = await supabase
+        .from("documents")
+        .select("*", { count: "exact", head: true })
+        .eq("user_id", user.id);
+
+      if (countError) {
+        toast({
+          title: "Error",
+          description: "Failed to check document count",
+          variant: "destructive",
+        });
+        return;
+      }
+
+      const currentCount = count || 0;
+      if (currentCount >= 10) {
+        toast({
+          title: "Document limit reached",
+          description: "You can have a maximum of 10 documents. Please delete some to upload more.",
+          variant: "destructive",
+        });
+        return;
+      }
+
+      // Only allow uploading files up to the limit
+      const remainingSlots = 10 - currentCount;
+      
+      const validFiles = acceptedFiles.slice(0, remainingSlots).filter((file) => {
         const ext = file.name.split(".").pop()?.toLowerCase();
         const isValid = ext === "pdf" || ext === "docx" || ext === "csv" || ext === "txt";
         const sizeOk = file.size <= 10 * 1024 * 1024; // 10MB limit

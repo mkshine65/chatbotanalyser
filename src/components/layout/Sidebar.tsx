@@ -119,7 +119,7 @@ export function Sidebar({
             {selectedDocIds.length > 0 && (
               <div className="px-4 py-3 border-t border-sidebar-border">
                 <p className="text-xs text-muted-foreground">
-                  {selectedDocIds.length} document(s) selected for chat
+                  1 document selected for chat
                 </p>
               </div>
             )}
