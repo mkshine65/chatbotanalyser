@@ -19,6 +19,7 @@ interface Document {
   file_type: string;
   file_size: number;
   status: string;
+  storage_path: string;
   created_at: string;
 }
 
@@ -77,8 +78,24 @@ export function DocumentList({
     if (!doc) return;
 
     try {
-      // Delete from storage
-      await supabase.storage.from("documents").remove([doc.name]);
+      // Delete document chunks first
+      const { error: chunksError } = await supabase
+        .from("document_chunks")
+        .delete()
+        .eq("document_id", id);
+
+      if (chunksError) {
+        console.error("Error deleting chunks:", chunksError);
+      }
+
+      // Delete from storage using the correct storage_path
+      const { error: storageError } = await supabase.storage
+        .from("documents")
+        .remove([doc.storage_path]);
+
+      if (storageError) {
+        console.error("Error deleting from storage:", storageError);
+      }
 
       // Delete from database
       const { error } = await supabase.from("documents").delete().eq("id", id);
