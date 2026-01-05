@@ -10,7 +10,7 @@ import {
   AlertCircle,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
-import { Checkbox } from "@/components/ui/checkbox";
+import { RadioGroup, RadioGroupItem } from "@/components/ui/radio-group";
 import { useToast } from "@/hooks/use-toast";
 
 interface Document {
@@ -102,12 +102,15 @@ export function DocumentList({
   };
 
   const toggleSelection = (id: string) => {
+    // Single selection: either select this doc or deselect if already selected
     if (selectedDocIds.includes(id)) {
-      onSelectionChange(selectedDocIds.filter((docId) => docId !== id));
+      onSelectionChange([]);
     } else {
-      onSelectionChange([...selectedDocIds, id]);
+      onSelectionChange([id]);
     }
   };
+
+  const documentCount = documents.length;
 
   const formatFileSize = (bytes: number) => {
     if (bytes < 1024) return `${bytes} B`;
@@ -147,23 +150,26 @@ export function DocumentList({
 
   return (
     <div className="space-y-2">
-      {documents.map((doc) => (
-        <div
-          key={doc.id}
-          className={cn(
-            "flex items-center gap-3 p-3 rounded-lg border transition-all cursor-pointer",
-            selectedDocIds.includes(doc.id)
-              ? "border-primary bg-primary/5"
-              : "border-border hover:border-primary/30 bg-card/50"
-          )}
-          onClick={() => doc.status === "ready" && toggleSelection(doc.id)}
-        >
-          <Checkbox
-            checked={selectedDocIds.includes(doc.id)}
-            disabled={doc.status !== "ready"}
-            onCheckedChange={() => toggleSelection(doc.id)}
-            onClick={(e) => e.stopPropagation()}
-          />
+      <div className="text-xs text-muted-foreground mb-2">
+        {documentCount}/10 documents
+      </div>
+      <RadioGroup value={selectedDocIds[0] || ""}>
+        {documents.map((doc) => (
+          <div
+            key={doc.id}
+            className={cn(
+              "flex items-center gap-3 p-3 rounded-lg border transition-all cursor-pointer",
+              selectedDocIds.includes(doc.id)
+                ? "border-primary bg-primary/5"
+                : "border-border hover:border-primary/30 bg-card/50"
+            )}
+            onClick={() => doc.status === "ready" && toggleSelection(doc.id)}
+          >
+            <RadioGroupItem
+              value={doc.id}
+              disabled={doc.status !== "ready"}
+              onClick={(e) => e.stopPropagation()}
+            />
 
           <div className="flex-1 min-w-0">
             <div className="flex items-center gap-2">
@@ -189,8 +195,9 @@ export function DocumentList({
               <Trash2 className="h-4 w-4" />
             </Button>
           </div>
-        </div>
-      ))}
+          </div>
+        ))}
+      </RadioGroup>
     </div>
   );
 }

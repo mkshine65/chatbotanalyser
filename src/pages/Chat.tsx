@@ -163,8 +163,8 @@ export default function Chat() {
             <Sparkles className="h-5 w-5 text-primary" />
             <span className="font-medium">
               {selectedDocIds.length > 0
-                ? `Chatting with ${selectedDocIds.length} document(s)`
-                : "Select documents to start"}
+                ? "Chatting with document"
+                : "Select a document to start"}
             </span>
           </div>
         </header>
